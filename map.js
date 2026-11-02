@@ -45,6 +45,10 @@
   map.attributionControl.setPrefix(false);
   map.attributionControl.addAttribution('State boundaries: United States Census Bureau');
 
+  // A provisional view before any layer is added: everything below then renders
+  // synchronously instead of through Leaflet's deferred whenReady queue.
+  map.setView([39.5, -96.5], 4, { animate: !reduceMotion });
+
   // Convert the compressed TopoJSON into GeoJSON that Leaflet can draw, then drop excluded states.
   const states = topojson.feature(topology, topology.objects.states);
   states.features = states.features.filter((f) => !EXCLUDED_STATES.has(f.properties.name));
@@ -60,6 +64,7 @@
   // State of the interaction. Hover is only a preview; this variable is the real selection.
   let selectedState = null;
   const stateLayers = new Map();   // state name -> its drawn shape
+  const hotspots = new Map();      // state name -> clickable circle for tiny active areas
   const markerGroups = new Map();  // state name -> its cluster group of markers
 
   // ---------- Markers ----------
@@ -154,24 +159,36 @@
     if (timer) { clearTimeout(timer); hideTimers.delete(name); }
   }
 
+  // Markers and highlight are driven by exactly two values, hoverName (pointer
+  // position) and selectedState (last click). Browsers do not always deliver
+  // mouseout, so nothing trusts the leave event alone: every hover, click,
+  // zoom, pan, cluster click and Reset repaints all active states from here.
+  function repaintStates() {
+    stateLayers.forEach((layer, name) => {
+      const lit = name === selectedState || name === hoverName;
+      if (lit && layer.options.fillColor !== COLORS.highlight) {
+        layer.setStyle({ fillColor: COLORS.highlight });
+      } else if (!lit && layer.options.fillColor !== COLORS.activeFill && activeLayer) {
+        activeLayer.resetStyle(layer);
+      }
+      const spot = hotspots.get(name);
+      if (spot) spot.setStyle(lit ? { fillColor: COLORS.highlight, color: COLORS.highlight } : hotspotStyle());
+    });
+  }
+
   function deactivate(name) {
     hideTimers.delete(name);
-    if (name === popupState || name === selectedState) { // still wanted: keep markers
-      if (hoverName === name) hoverName = null;
-      return;
-    }
-    const layer = stateLayers.get(name);
-    if (layer) unhighlight(layer);
-    hideMarkers(name);
     if (hoverName === name) hoverName = null;
+    if (name === selectedState || name === popupState) return; // still wanted: keep its markers
+    hideMarkers(name);
+    repaintStates();
   }
 
   function activateHover(name) {
     cancelHide(name);
     if (hoverName && hoverName !== name) deactivate(hoverName);
     hoverName = name;
-    const layer = stateLayers.get(name);
-    if (layer) highlight(layer);
+    repaintStates();
     showMarkers(name);
   }
 
@@ -184,6 +201,20 @@
     hideTimers.set(name, timer);
   }
 
+  // After a zoom or pan the pointer's hover is stale (the browser rarely fires
+  // mouseout while the map moves), so the hover is dropped and everything repaints.
+  // The repaint is deferred because moveend can fire before the SVG re-projection
+  // has laid fresh path bounds down; painting during that gap throws.
+  function dropStaleHover() {
+    const name = hoverName;
+    hoverName = null;
+    if (name) {
+      hideTimers.delete(name);
+      if (name !== selectedState && name !== popupState) hideMarkers(name);
+    }
+    L.Util.requestAnimFrame(repaintStates);
+  }
+
   // Cluster group per state, one instance, added to the map only while shown.
   for (const [stateName, items] of locationsByState) {
     // zoomToBoundsOnClick is off: our clusterclick handler alone zooms, so the
@@ -193,7 +224,12 @@
       zoomToBoundsOnClick: false,
       maxClusterRadius: 40,
     });
-    items.forEach((loc) => group.addLayer(buildMarker(loc)));
+    items.forEach((loc) => {
+      const marker = buildMarker(loc);
+      // A click on a pin selects its state (and zooms), then opens the popup.
+      marker.on('click', () => activateForClick(stateName));
+      group.addLayer(marker);
+    });
     // Clicking a cluster zooms in until its markers separate.
     group.on('clusterclick', (event) => {
       event.layer.zoomToBounds({ padding: [20, 20], animate: !reduceMotion });
@@ -219,16 +255,7 @@
   // no pointer cursor, and dragging passes straight through to the map.
   L.geoJSON(states, { filter: (f) => !isActive(f), style: baseStyle, interactive: false }).addTo(map);
 
-  function highlight(layer) {
-    layer.setStyle({ fillColor: COLORS.highlight });
-    layer.bringToFront(); // Draw its white border above neighbors.
-  }
-
-  let activeLayer; // Declared first because unhighlight() needs it.
-  function unhighlight(layer) {
-    activeLayer.resetStyle(layer);
-  }
-
+  let activeLayer; // The group the highlight repaint resets styles against.
   function onEachActiveState(feature, layer) {
     const name = feature.properties.name;
     const count = locationsByState.get(name).length;
@@ -245,6 +272,27 @@
 
   activeLayer = L.geoJSON(states, { filter: isActive, style: baseStyle, onEachFeature: onEachActiveState }).addTo(map);
 
+  // ---------- Clickable circles for tiny active areas ----------
+  // The District of Columbia and similar areas are a few pixels wide at the
+  // national view. Any active area smaller than one degree in BOTH directions
+  // (decided by size, never by name) gets a ~20 px clickable circle.
+  function hotspotStyle() {
+    return { radius: 10, weight: 2, color: COLORS.border, fillColor: COLORS.activeFill, fillOpacity: 1 };
+  }
+  stateLayers.forEach((layer, name) => {
+    const bounds = layer.getBounds();
+    if ((bounds.getNorth() - bounds.getSouth()) >= 1 || (bounds.getEast() - bounds.getWest()) >= 1) return;
+    const count = locationsByState.get(name).length;
+    const spot = L.circleMarker(bounds.getCenter(), Object.assign({ className: 'crg-hotspot' }, hotspotStyle())).addTo(map);
+    spot.bindTooltip(`${name}: ${count} ${count === 1 ? 'location' : 'locations'}`, { direction: 'top', opacity: 1 });
+    spot.on({
+      mouseover: () => activateHover(name),
+      mouseout: () => scheduleHide(name),
+      click: () => activateForClick(name),
+    });
+    hotspots.set(name, spot);
+  });
+
   // ---------- Views ----------
   function goNational() {
     map.setMinZoom(0);
@@ -255,19 +303,13 @@
   }
 
   function selectState(name) {
-    if (selectedState && selectedState !== name) {
-      const previous = selectedState;
-      selectedState = null;
-      unhighlight(stateLayers.get(previous));
-    }
     cancelHide(name); // A click counts as a hover; never hide right after selecting.
     selectedState = name;
     hoverName = name;
-    const layer = stateLayers.get(name);
-    highlight(layer);
+    repaintStates();
     showMarkers(name);
     // maxZoom stops tiny shapes such as DC from zooming absurdly far.
-    map.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 9, animate: !reduceMotion });
+    map.fitBounds(stateLayers.get(name).getBounds(), { padding: [30, 30], maxZoom: 9, animate: !reduceMotion });
     map.scrollWheelZoom.enable();
     map.dragging.enable();
   }
@@ -297,8 +339,9 @@
     hoverName = null;
     for (const timer of hideTimers.values()) clearTimeout(timer);
     hideTimers.clear();
-    if (previous) unhighlight(stateLayers.get(previous));
+    if (previous) hideMarkers(previous);
     for (const name of markerGroups.keys()) hideMarkers(name);
+    repaintStates();
     map.closePopup();
     map.scrollWheelZoom.disable();
     if (isTouchDevice) map.dragging.disable();
@@ -310,7 +353,13 @@
   // click on the map (including selecting a state) and turns off again when the
   // pointer leaves the map, unless a state stays selected.
   map.on('click', () => { if (!isTouchDevice) map.scrollWheelZoom.enable(); });
-  container.addEventListener('mouseleave', () => { if (!selectedState) map.scrollWheelZoom.disable(); });
+  container.addEventListener('mouseleave', () => {
+    if (!selectedState) map.scrollWheelZoom.disable();
+    // Safety net: the leave event is the one browsers sometimes skip, so a move
+    // and a zoom repaint as well, but leaving the map always ends the hover.
+    dropStaleHover();
+  });
+  map.on('zoomend moveend', dropStaleHover);
 
   // ---------- Full screen (maximize) button ----------
   const fullscreenButton = document.getElementById('crg-map-fullscreen');
@@ -348,6 +397,38 @@
   fullscreenButton.addEventListener('click', toggleFullscreen);
   document.addEventListener('fullscreenchange', syncFullscreen);
   document.addEventListener('webkitfullscreenchange', syncFullscreen);
+
+  // ---------- Keyboard access ----------
+  // Leaflet's zoom control uses anchors; real button elements give Tab focus,
+  // Enter and Space for free (Space on a button never scrolls the page).
+  function buttonizeZoomControls() {
+    document.querySelectorAll('.crg-map .leaflet-control-zoom a').forEach((anchor) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = anchor.className;
+      button.innerHTML = anchor.innerHTML;
+      button.title = anchor.title;
+      button.setAttribute('aria-label', anchor.title);
+      L.DomEvent.disableClickPropagation(button);
+      L.DomEvent.disableScrollPropagation(button);
+      L.DomEvent.on(button, 'click', (event) => {
+        L.DomEvent.stop(event);
+        if (button.classList.contains('leaflet-control-zoom-in')) map.zoomIn(event.shiftKey ? 3 : 1);
+        else map.zoomOut(event.shiftKey ? 3 : 1);
+      });
+      anchor.replaceWith(button);
+    });
+  }
+  function syncZoomButtons() {
+    const zoom = map.getZoom();
+    const zoomIn = document.querySelector('.crg-map .leaflet-control-zoom-in');
+    const zoomOut = document.querySelector('.crg-map .leaflet-control-zoom-out');
+    if (zoomIn) zoomIn.disabled = zoom >= map.getMaxZoom();
+    if (zoomOut) zoomOut.disabled = zoom <= map.getMinZoom();
+  }
+  buttonizeZoomControls();
+  map.on('zoomend', syncZoomButtons);
+  syncZoomButtons();
 
   document.getElementById('crg-map-reset').addEventListener('click', resetView);
   goNational();

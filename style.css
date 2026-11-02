@@ -123,7 +123,27 @@
   text-decoration: none;
 }
 .crg-pop__link:hover { text-decoration: underline; }
-
 /* Reduced-motion requirement from the brief. */
 @media (prefers-reduced-motion: reduce) {
-  .crg-map-reset, .crg-map-fullscreen { transition: none; } }
+  .crg-map-reset, .crg-map-fullscreen { transition: none; }
+}
+
+/* Keyboard access: every control shows a visible outline on focus.
+   State shapes are intentionally NOT tab stops; keyboard users use the
+   directory below the map (built in Stages 2 and 4), per the brief. */
+.crg-map .leaflet-control-zoom a:focus-visible,
+.crg-map .leaflet-control-zoom button:focus-visible,
+.crg-map-reset:focus-visible,
+.crg-map-fullscreen:focus-visible { outline: 3px solid #D6C5A8; outline-offset: 2px; }
+
+/* The zoom controls are now real button elements styled like Leaflet's bar. */
+.crg-map .crg-hotspot { cursor: pointer; }
+.crg-map .leaflet-control-zoom button {
+  display: block; width: 26px; height: 26px; padding: 0;
+  border: 0; background: #fff; color: #333;
+  font: 400 18px/24px sans-serif; text-align: center; cursor: pointer;
+}
+.crg-map .leaflet-control-zoom button + button { border-top: 1px solid #ccc; }
+.crg-map .leaflet-control-zoom button[disabled] {
+  background: #f4f4f4; color: #bbb; cursor: default;
+}
