@@ -1,0 +1,357 @@
+(async function () {
+  'use strict';
+
+  // Brand colors. Dark gray for states with locations, light gray for the rest.
+  const COLORS = { activeFill: '#7b828c', inactiveFill: '#dfe2e6', border: '#ffffff', highlight: '#23447F' };
+
+  // Version 1 shows only the lower 48 states plus DC. Alaska and Hawaii would stretch
+  // the national view, and Puerto Rico is also in the boundary file.
+  const EXCLUDED_STATES = new Set(['Alaska', 'Hawaii', 'Puerto Rico']);
+
+  // Rough rectangle around the lower 48 states: [[south, west], [north, east]].
+  const NATIONAL_BOUNDS = [[24.4, -125.0], [49.6, -66.9]];
+
+  // Accessibility requirement: respect the visitor's "reduce motion" system setting.
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // True on phones and tablets. Used so one-finger swiping scrolls the page, not the map.
+  const isTouchDevice = L.Browser.mobile;
+
+  const container = document.getElementById('crg-map');
+
+  // Load the state outlines and the location list at the same time.
+  // In WordPress, the locations will come from the page itself instead of a file.
+  let topology, locations;
+  try {
+    [topology, locations] = await Promise.all([
+      fetch('data/states-10m.json').then((r) => r.json()),
+      fetch('data/locations.json').then((r) => r.json()),
+    ]);
+  } catch (error) {
+    container.textContent = 'The map could not be loaded.';
+    console.error(error);
+    return;
+  }
+
+  const map = L.map(container, {
+    zoomSnap: 0.25,                       // Allows fractional zoom so states fit tightly.
+    maxZoom: 14,
+    scrollWheelZoom: false,               // Wheel zoom turns on only after a click on the map or selecting a state.
+    dragging: !isTouchDevice,             // On touch devices, enabled only after a state is selected.
+    zoomAnimation: !reduceMotion,
+    fadeAnimation: !reduceMotion,
+    markerZoomAnimation: !reduceMotion,
+  });
+  map.attributionControl.setPrefix(false);
+  map.attributionControl.addAttribution('State boundaries: United States Census Bureau');
+
+  // Convert the compressed TopoJSON into GeoJSON that Leaflet can draw, then drop excluded states.
+  const states = topojson.feature(topology, topology.objects.states);
+  states.features = states.features.filter((f) => !EXCLUDED_STATES.has(f.properties.name));
+
+  // Group locations by state name. A state is "active" if it has at least one location.
+  const locationsByState = new Map();
+  for (const loc of locations) {
+    if (!locationsByState.has(loc.state_name)) locationsByState.set(loc.state_name, []);
+    locationsByState.get(loc.state_name).push(loc);
+  }
+  const isActive = (feature) => locationsByState.has(feature.properties.name);
+
+  // State of the interaction. Hover is only a preview; this variable is the real selection.
+  let selectedState = null;
+  const stateLayers = new Map();   // state name -> its drawn shape
+  const markerGroups = new Map();  // state name -> its cluster group of markers
+
+  // ---------- Markers ----------
+  // Static SVG icons for the popup. They never receive data inside them,
+  // so building the popup with textContent for all text stays XSS-safe.
+  const ICON = {
+    pin: '<svg viewBox="0 0 24 24" width="18" height="18" fill="#c0392b" aria-hidden="true"><path d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>',
+    phone: '<svg viewBox="0 0 24 24" width="18" height="18" fill="#1e7a46" aria-hidden="true"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.2.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.2.2 2.4.6 3.6.1.3 0 .7-.2 1l-2.3 2.2z"/></svg>',
+    globe: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#23447F" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3z"/></svg>',
+  };
+
+  function popupRow(icon, node) {
+    const row = document.createElement('div');
+    row.className = 'crg-pop__row';
+    const iconWrap = document.createElement('span');
+    iconWrap.innerHTML = icon; // Our control string only; data is never placed here.
+    row.appendChild(iconWrap);
+    row.appendChild(node);
+    return row;
+  }
+
+  function buildPopup(loc) {
+    // Built with textContent, never an HTML string, so location text can never inject HTML.
+    const wrapper = document.createElement('div');
+    wrapper.className = 'crg-pop';
+
+    const head = document.createElement('div');
+    head.className = 'crg-pop__head';
+    const logo = document.createElement('img');
+    logo.className = 'crg-pop__logo';
+    logo.src = 'assets/logo.png';
+    logo.alt = 'CRG logo';
+    const title = document.createElement('span');
+    title.className = 'crg-pop__title';
+    title.textContent = `${loc.city}, ${loc.state_code}`;
+    head.appendChild(logo);
+    head.appendChild(title);
+    wrapper.appendChild(head);
+
+    if (loc.address) {
+      const address = document.createElement('p');
+      address.className = 'crg-pop__line';
+      address.textContent = loc.address;
+      wrapper.appendChild(popupRow(ICON.pin, address));
+    }
+    if (loc.phone) {
+      const phone = document.createElement('a');
+      const digits = String(loc.phone).replace(/[^\d+]/g, '');
+      phone.className = 'crg-pop__phone';
+      if (digits) { phone.href = 'tel:' + digits; }
+      phone.textContent = loc.phone;
+      wrapper.appendChild(popupRow(ICON.phone, phone));
+    }
+    if (/^https?:\/\//.test(loc.url)) {
+      const link = document.createElement('a');
+      link.className = 'crg-pop__link';
+      link.href = loc.url;
+      link.textContent = 'WEBSITE';
+      link.target = '_blank';
+      link.rel = 'noopener';
+      wrapper.appendChild(popupRow(ICON.globe, link));
+    }
+    return wrapper;
+  }
+
+  function buildMarker(loc) {
+    const marker = L.marker([loc.lat, loc.lng], {
+      // The CRG logo inside a circular badge, instead of Leaflet's default image pin.
+      icon: L.divIcon({
+        className: 'crg-pin',
+        html: '<img src="assets/logo.png" alt="" draggable="false">',
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      }),
+      title: `${loc.city}, ${loc.state_code}`, // Screen readers and hover text.
+      keyboard: true,                          // Markers are reachable with the Tab key.
+    });
+    marker.bindPopup(buildPopup(loc));
+    marker.locationId = loc.id; // Later used to link this marker to its directory entry.
+    return marker;
+  }
+
+  // ---------- Marker visibility: built for hover, with a short grace period ----------
+  // The pointer can jump between the polygon, a marker and its popup; without a grace
+  // period the polygon's mouseout would remove the markers and flicker them away.
+  let hoverName = null;      // state whose highlight/markers are currently shown
+  let popupState = null;     // state that contains the marker whose popup is open
+  const hideTimers = new Map(); // state name -> pending hide timer
+
+  function cancelHide(name) {
+    const timer = hideTimers.get(name);
+    if (timer) { clearTimeout(timer); hideTimers.delete(name); }
+  }
+
+  function deactivate(name) {
+    hideTimers.delete(name);
+    if (name === popupState || name === selectedState) { // still wanted: keep markers
+      if (hoverName === name) hoverName = null;
+      return;
+    }
+    const layer = stateLayers.get(name);
+    if (layer) unhighlight(layer);
+    hideMarkers(name);
+    if (hoverName === name) hoverName = null;
+  }
+
+  function activateHover(name) {
+    cancelHide(name);
+    if (hoverName && hoverName !== name) deactivate(hoverName);
+    hoverName = name;
+    const layer = stateLayers.get(name);
+    if (layer) highlight(layer);
+    showMarkers(name);
+  }
+
+  function scheduleHide(name) {
+    if (hideTimers.has(name)) return;
+    const timer = setTimeout(function () {
+      hideTimers.delete(name);
+      if (hoverName === name) deactivate(name);
+    }, 120);
+    hideTimers.set(name, timer);
+  }
+
+  // Cluster group per state, one instance, added to the map only while shown.
+  for (const [stateName, items] of locationsByState) {
+    // zoomToBoundsOnClick is off: our clusterclick handler alone zooms, so the
+    // built-in zoom and ours never fight over the same animation.
+    const group = L.markerClusterGroup({
+      showCoverageOnHover: false,
+      zoomToBoundsOnClick: false,
+      maxClusterRadius: 40,
+    });
+    items.forEach((loc) => group.addLayer(buildMarker(loc)));
+    // Clicking a cluster zooms in until its markers separate.
+    group.on('clusterclick', (event) => {
+      event.layer.zoomToBounds({ padding: [20, 20], animate: !reduceMotion });
+    });
+    // Hovering a marker or cluster refreshes the same highlight/markers as the polygon.
+    group.on('mouseover', () => activateHover(stateName));
+    group.on('mouseout', () => scheduleHide(stateName));
+    // A marker with an open popup keeps its state visible until the popup closes.
+    group.on('popupopen', () => { popupState = stateName; });
+    group.on('popupclose', () => { if (popupState === stateName) popupState = null; });
+    markerGroups.set(stateName, group);
+  }
+
+  // ---------- State shapes ----------
+  const baseStyle = (feature) => ({
+    color: COLORS.border,
+    weight: 1,
+    fillOpacity: 1,
+    fillColor: isActive(feature) ? COLORS.activeFill : COLORS.inactiveFill,
+  });
+
+  // Inactive states live in their own layer with interactivity off: no hover, no click,
+  // no pointer cursor, and dragging passes straight through to the map.
+  L.geoJSON(states, { filter: (f) => !isActive(f), style: baseStyle, interactive: false }).addTo(map);
+
+  function highlight(layer) {
+    layer.setStyle({ fillColor: COLORS.highlight });
+    layer.bringToFront(); // Draw its white border above neighbors.
+  }
+
+  let activeLayer; // Declared first because unhighlight() needs it.
+  function unhighlight(layer) {
+    activeLayer.resetStyle(layer);
+  }
+
+  function onEachActiveState(feature, layer) {
+    const name = feature.properties.name;
+    const count = locationsByState.get(name).length;
+    stateLayers.set(name, layer);
+    // Not sticky: a tooltip that follows the cursor sits on top of the clusters it
+    // describes, blocking their click. Anchored to the state's center instead.
+    layer.bindTooltip(`${name}: ${count} ${count === 1 ? 'location' : 'locations'}`, { direction: 'top', opacity: 1 });
+    layer.on({
+      mouseover: () => activateHover(name),
+      mouseout: () => scheduleHide(name),
+      click: () => activateForClick(name), // On phones a tap triggers this same handler.
+    });
+  }
+
+  activeLayer = L.geoJSON(states, { filter: isActive, style: baseStyle, onEachFeature: onEachActiveState }).addTo(map);
+
+  // ---------- Views ----------
+  function goNational() {
+    map.setMinZoom(0);
+    // Markercluster breaks at fractional minZoom levels: single markers stop rendering.
+    // The minZoom clamp must be an integer, while the view itself may sit at 4.5.
+    map.setMinZoom(Math.floor(map.getBoundsZoom(NATIONAL_BOUNDS))); // Never zoom out past the national view.
+    map.fitBounds(NATIONAL_BOUNDS, { animate: !reduceMotion });
+  }
+
+  function selectState(name) {
+    if (selectedState && selectedState !== name) {
+      const previous = selectedState;
+      selectedState = null;
+      unhighlight(stateLayers.get(previous));
+    }
+    cancelHide(name); // A click counts as a hover; never hide right after selecting.
+    selectedState = name;
+    hoverName = name;
+    const layer = stateLayers.get(name);
+    highlight(layer);
+    showMarkers(name);
+    // maxZoom stops tiny shapes such as DC from zooming absurdly far.
+    map.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 9, animate: !reduceMotion });
+    map.scrollWheelZoom.enable();
+    map.dragging.enable();
+  }
+
+  // Same as a hover, but keeps the markers after the pointer leaves (a click selection).
+  function activateForClick(name) {
+    activateHover(name);
+    selectState(name);
+  }
+
+  // ----- Marker visibility: hidden until the state is hovered or selected -----
+  function showMarkers(name) {
+    const group = markerGroups.get(name);
+    if (group && !map.hasLayer(group)) map.addLayer(group);
+  }
+
+  function hideMarkers(name) {
+    if (name === selectedState) return; // The selected state keeps its markers.
+    const group = markerGroups.get(name);
+    if (group && map.hasLayer(group)) map.removeLayer(group);
+  }
+
+  function resetView() {
+    const previous = selectedState;
+    selectedState = null;
+    popupState = null;
+    hoverName = null;
+    for (const timer of hideTimers.values()) clearTimeout(timer);
+    hideTimers.clear();
+    if (previous) unhighlight(stateLayers.get(previous));
+    for (const name of markerGroups.keys()) hideMarkers(name);
+    map.closePopup();
+    map.scrollWheelZoom.disable();
+    if (isTouchDevice) map.dragging.disable();
+    goNational();
+  }
+
+  // ---------- Input behavior ----------
+  // The wheel keeps scrolling the page by default. Wheel zoom turns on after any
+  // click on the map (including selecting a state) and turns off again when the
+  // pointer leaves the map, unless a state stays selected.
+  map.on('click', () => { if (!isTouchDevice) map.scrollWheelZoom.enable(); });
+  container.addEventListener('mouseleave', () => { if (!selectedState) map.scrollWheelZoom.disable(); });
+
+  // ---------- Full screen (maximize) button ----------
+  const fullscreenButton = document.getElementById('crg-map-fullscreen');
+  const wrap = container.parentElement;
+  const canFullscreen = !!(wrap.requestFullscreen || wrap.webkitRequestFullscreen);
+  // iOS Safari has no element Fullscreen API; fall back to a fixed overlay that
+  // covers the viewport (the browser URL bar unfortunately stays visible there).
+  function isFullscreen() {
+    return document.fullscreenElement === wrap || document.webkitFullscreenElement === wrap;
+  }
+  function syncFullscreen() {
+    const on = isFullscreen() || wrap.classList.contains('crg-fs-fallback');
+    fullscreenButton.setAttribute('aria-pressed', String(on));
+    fullscreenButton.setAttribute('aria-label', on ? 'Exit full screen' : 'View map full screen');
+    setTimeout(() => {
+      map.invalidateSize();
+      if (!selectedState) goNational();
+    }, 150);
+  }
+  function toggleFullscreen() {
+    if (canFullscreen) {
+      if (isFullscreen()) {
+        if (document.exitFullscreen) document.exitFullscreen();
+        else document.webkitExitFullscreen();
+      } else if (wrap.requestFullscreen) {
+        wrap.requestFullscreen();
+      } else {
+        wrap.webkitRequestFullscreen();
+      }
+    } else {
+      wrap.classList.toggle('crg-fs-fallback');
+      syncFullscreen();
+    }
+  }
+  fullscreenButton.addEventListener('click', toggleFullscreen);
+  document.addEventListener('fullscreenchange', syncFullscreen);
+  document.addEventListener('webkitfullscreenchange', syncFullscreen);
+
+  document.getElementById('crg-map-reset').addEventListener('click', resetView);
+  goNational();
+
+  // Exposed for automated tests, per the master plan's data/module contract tests.
+  window.crgMap = { map: map };
+})();
