@@ -1,0 +1,4 @@
+[
+  { "id": 901, "city": "<img src=x onerror=alert(1)>", "state_code": "FL", "state_name": "Florida", "lat": 27.9, "lng": -82.4, "url": "", "address": "<script>alert(2)</script>", "phone": "" },
+  { "id": 902, "city": "Miami", "state_code": "FL", "state_name": "Florida", "lat": 25.7617, "lng": -80.1918, "url": "javascript:alert(3)", "address": "", "phone": "" }
+]

@@ -10,7 +10,7 @@
   <!-- Our stylesheet loads last so it can override the library defaults. -->
   <link rel="stylesheet" href="style.css">
 </head>
-<body style="height: 1500px"> 
+<body style="height: 1500px">
   <div class="crg-map-wrap">
     <button type="button" id="crg-map-reset" class="crg-map-reset" aria-label="Reset map to national view">Reset map</button>
     <button type="button" id="crg-map-fullscreen" class="crg-map-fullscreen" aria-label="View map full screen" aria-pressed="false">
@@ -24,10 +24,17 @@
     <div id="crg-map" class="crg-map" role="region" aria-label="Map of CRG operating locations"></div>
   </div>
 
+  <!-- Location directory: the prototype script fills this section; in WordPress
+       PHP prints the same details/summary/ul/button markup into it. -->
+  <section id="crg-dir" class="crg-dir" aria-label="Location directory"></section>
+
   <!-- Order matters: Leaflet first, then the add-on that depends on it, then our code. -->
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/markercluster/leaflet.markercluster.js"></script>
   <script src="vendor/topojson-client.min.js"></script>
   <script src="map.js"></script>
+  <script src="render-directory.js"></script>
+  <script src="crg-directory.js"></script>
+  <script src="main.js"></script>
 </body>
 </html>

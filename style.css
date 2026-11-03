@@ -147,3 +147,126 @@
 .crg-map .leaflet-control-zoom button[disabled] {
   background: #f4f4f4; color: #bbb; cursor: default;
 }
+/* ============================================================
+   Location directory (below the map, same width as the map)
+   ============================================================ */
+.crg-dir {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+  align-content: start;
+  max-width: 1100px;
+  margin: 0 auto 3rem;
+  padding: 0 1rem;
+  font-family: sans-serif;
+}
+
+.crg-dir__state {
+  background: #fff;
+  border: 1px solid #dfe2e6;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* The heading is the control: no separate "zoom to state" button. */
+.crg-dir__state summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px 14px;
+  box-sizing: border-box;
+  cursor: pointer;
+  list-style: none;
+  font: 700 15px/1.3 sans-serif;
+  color: #002E4D;
+}
+.crg-dir__state summary::-webkit-details-marker { display: none; }
+.crg-dir__state summary::after {
+  content: '';
+  margin-left: auto;
+  width: 8px; height: 8px;
+  border-right: 2px solid #23447F;
+  border-bottom: 2px solid #23447F;
+  transform: rotate(-45deg);
+  transition: transform .15s ease;
+}
+.crg-dir__state[open] summary::after { transform: rotate(45deg); }
+.crg-dir__state summary:hover { background: #f2f5f9; }
+.crg-dir__state summary:focus-visible {
+  outline: 3px solid #D6C5A8;
+  outline-offset: -3px;
+}
+
+.crg-dir__count { font-weight: 400; color: #4a5260; }
+
+.crg-dir__state ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px 8px 8px;
+  border-top: 1px solid #eef0f2;
+}
+.crg-dir__state li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-left: 4px solid transparent;
+  border-radius: 4px;
+}
+
+/* Highlighted city: sand background + blue left border + aria-current="true".
+   The border and the attribute mean the highlight does not rely on color alone. */
+.crg-dir__state li[aria-current="true"] {
+  background: #F1EFE8;
+  border-left-color: #23447F;
+}
+
+.crg-dir__city { font: 400 14px/1.4 sans-serif; color: #333; }
+a.crg-dir__city { color: #23447F; font-weight: 600; text-decoration: none; }
+a.crg-dir__city:hover { text-decoration: underline; }
+a.crg-dir__city:focus-visible {
+  outline: 3px solid #D6C5A8;
+  outline-offset: 2px;
+}
+
+.crg-dir__action {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  border: 1px solid #23447F;
+  border-radius: 6px;
+  background: #fff;
+  color: #23447F;
+  font: 600 13px/1 sans-serif;
+  cursor: pointer;
+  transition: background-color .15s ease;
+}
+.crg-dir__action:hover { background: #eef2f8; }
+.crg-dir__action:focus-visible {
+  outline: 3px solid #D6C5A8;
+  outline-offset: 2px;
+}
+
+/* One column on phones. */
+@media (max-width: 560px) {
+  .crg-dir { grid-template-columns: 1fr; }
+}
+
+/* Visually hidden, still announced by screen readers (live region). */
+.crg-visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crg-dir__state summary::after,
+  .crg-dir__action { transition: none; }
+}
