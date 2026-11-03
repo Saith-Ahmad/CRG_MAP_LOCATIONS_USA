@@ -1,6 +1,7 @@
-// Directory behavior. Reads only the markup contract (section.crg-dir details,
-// summary, ul/li, the "Show on map" buttons) and calls the map's actions. This
-// file is meant to work unchanged in WordPress, where PHP prints the markup.
+// Directory behavior. Reads only the markup contract (section.crg-dir cards,
+// their header buttons, city rows and the "Show on map" buttons) and calls the
+// map's actions. This file is meant to work unchanged in WordPress, where PHP
+// prints the markup.
 (function (window) {
   'use strict';
 
@@ -10,8 +11,8 @@
     const locationsById = new Map();
     for (const loc of locations) locationsById.set(Number(loc.id), loc);
 
-    const cards = new Map(); // state name -> details element
-    root.querySelectorAll('details.crg-dir__state').forEach((card) => {
+    const cards = new Map(); // state name -> card element
+    root.querySelectorAll('.crg-dir__state').forEach((card) => {
       cards.set(card.dataset.stateName, card);
     });
 
@@ -32,19 +33,15 @@
       return card.querySelectorAll('li[data-loc-id]').length;
     }
 
-    // Opening a card always collapses every other card.
-    function openOnly(name) {
-      let wanted = null;
+    // Exactly one card carries the active (selected state) styling; aria-pressed
+    // mirrors it so the highlight is not conveyed by color alone.
+    function setActiveCard(name) {
       cards.forEach((card, cardName) => {
-        if (cardName === name) wanted = card;
-        else card.open = false;
+        const active = cardName === name;
+        card.classList.toggle('is-active', active);
+        const head = card.querySelector('.crg-dir__head');
+        if (head) head.setAttribute('aria-pressed', String(active));
       });
-      if (wanted) wanted.open = true;
-      return wanted;
-    }
-
-    function collapseAll() {
-      cards.forEach((card) => { card.open = false; });
     }
 
     // The highlighted row uses aria-current, so the state is not conveyed by color alone.
@@ -61,7 +58,8 @@
 
     // ---------- Map callbacks (these never call the map back) ----------
     function onStateChange(name) {
-      const card = openOnly(name);
+      const card = cards.get(name);
+      setActiveCard(card ? name : null);
       setCurrentLocation(null);
       if (card) {
         const count = locationCount(card);
@@ -76,13 +74,14 @@
       }
       const loc = locationsById.get(Number(id));
       if (!loc) return;
-      openOnly(String(loc.state_name));
+      const stateName = String(loc.state_name);
+      setActiveCard(cards.has(stateName) ? stateName : null);
       setCurrentLocation(Number(id));
-      announce(String(loc.city) + ', ' + String(loc.state_name) + ' selected');
+      announce(String(loc.city) + ', ' + stateName + ' selected');
     }
 
     function onReset() {
-      collapseAll();
+      setActiveCard(null);
       setCurrentLocation(null);
     }
 
@@ -103,21 +102,13 @@
     function attach(mapApi) {
       map = mapApi;
 
-      cards.forEach((card) => {
-        const summary = card.querySelector('summary');
-        if (!summary) return;
-        summary.addEventListener('click', (event) => {
-          // Without preventDefault the browser would toggle the card again after
-          // this handler and undo the open/close we just performed.
-          event.preventDefault();
-          const name = card.dataset.stateName;
-          if (card.open) {
-            // An open heading only closes its own card and never touches the map.
-            card.open = false;
-            return;
-          }
-          openOnly(name);
-          if (map) map.selectState(name);
+      root.querySelectorAll('.crg-dir__head[data-action="select-state"]').forEach((head) => {
+        head.addEventListener('click', () => {
+          if (!map) return;
+          map.selectState(head.dataset.stateName);
+          // A directory action moved the map; bring the result into view. Focus
+          // stays on the header button because scrollIntoView never moves focus.
+          scrollMapIntoView();
         });
       });
 
